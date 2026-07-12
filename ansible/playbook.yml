@@ -1,0 +1,26 @@
+---
+- name: Configurar servidor da aplicacao
+  hosts: app
+  become: true
+
+  tasks:
+    - name: Atualizar lista de pacotes
+      apt:
+        update_cache: true
+
+    - name: Instalar Docker
+      apt:
+        name: docker.io
+        state: present
+
+    - name: Garantir que o Docker esta ativo
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Adicionar utilizador ubuntu ao grupo docker
+      user:
+        name: ubuntu
+        groups: docker
+        append: true
