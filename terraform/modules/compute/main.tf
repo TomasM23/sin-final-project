@@ -1,4 +1,5 @@
 resource "aws_instance" "app" {
+  iam_instance_profile        = var.iam_instance_profile
   ami                         = var.ami_id
   instance_type               = var.instance_type
   subnet_id                   = var.public_subnet_id
