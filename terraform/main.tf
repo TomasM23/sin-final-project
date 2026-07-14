@@ -24,6 +24,15 @@ module "vpc" {
   tags = local.common_tags
 }
 
+module "iam" {
+  source = "./modules/iam"
+
+  project_name = var.project_name
+  queue_arn    = module.queue.queue_arn
+
+  tags = local.common_tags
+}
+
 module "compute" {
   source = "./modules/compute"
 
@@ -33,6 +42,8 @@ module "compute" {
   public_subnet_id      = module.vpc.public_subnet_1_id
   app_security_group_id = module.vpc.app_security_group_id
   key_name              = "sin-final-project-key"
+
+  iam_instance_profile = module.iam.instance_profile_name
 
   tags = local.common_tags
 }
