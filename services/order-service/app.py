@@ -12,7 +12,7 @@ QUEUE_URL = os.getenv("QUEUE_URL")
 
 sqs = boto3.client(
     "sqs",
-    region_name=os.getenv("AWS_REGION", "eu-west-1")
+    region_name=os.getenv("AWS_REGION", "eu-west-1"),
 )
 
 
@@ -33,7 +33,7 @@ def create_order():
     order = {
         "id": len(orders) + 1,
         "product": data["product"],
-        "quantity": data["quantity"]
+        "quantity": data["quantity"],
     }
 
     orders.append(order)
@@ -41,7 +41,7 @@ def create_order():
     if QUEUE_URL:
         sqs.send_message(
             QueueUrl=QUEUE_URL,
-            MessageBody=json.dumps(order)
+            MessageBody=json.dumps(order),
         )
 
     return jsonify(order), 201

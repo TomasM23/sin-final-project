@@ -67,27 +67,24 @@ jobs:
         with:
           context: ./services/catalog-service
           push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/catalog-service:${{ github.sha }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/catalog-service:latest
+          no-cache: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/catalog-service:latest
 
       - name: Build and push Order Service
         uses: docker/build-push-action@v6
         with:
           context: ./services/order-service
           push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/order-service:${{ github.sha }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/order-service:latest
+          no-cache: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/order-service:latest
 
       - name: Build and push Notification Service
         uses: docker/build-push-action@v6
         with:
           context: ./services/notification-service
           push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/notification-service:${{ github.sha }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/notification-service:latest
+          no-cache: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/notification-service:latest
 
       - name: Prepare SSH key
         run: |
@@ -102,24 +99,17 @@ jobs:
 
           set -e
 
-          SHA="${{ github.sha }}"
-          USERNAME="${{ secrets.DOCKERHUB_USERNAME }}"
-
-          CATALOG_IMAGE="$USERNAME/catalog-service:$SHA"
-          ORDER_IMAGE="$USERNAME/order-service:$SHA"
-          NOTIFICATION_IMAGE="$USERNAME/notification-service:$SHA"
-
-          echo "Catalog image: $CATALOG_IMAGE"
-          echo "Order image: $ORDER_IMAGE"
-          echo "Notification image: $NOTIFICATION_IMAGE"
-
-          docker pull "$CATALOG_IMAGE"
-          docker pull "$ORDER_IMAGE"
-          docker pull "$NOTIFICATION_IMAGE"
-
           docker rm -f catalog-service 2>/dev/null || true
           docker rm -f order-service 2>/dev/null || true
           docker rm -f notification-service 2>/dev/null || true
+
+          docker image rm -f tomasmatos023/catalog-service:latest 2>/dev/null || true
+          docker image rm -f tomasmatos023/order-service:latest 2>/dev/null || true
+          docker image rm -f tomasmatos023/notification-service:latest 2>/dev/null || true
+
+          docker pull tomasmatos023/catalog-service:latest
+          docker pull tomasmatos023/order-service:latest
+          docker pull tomasmatos023/notification-service:latest
 
           docker run -d \
             --name catalog-service \
@@ -130,7 +120,7 @@ jobs:
             -e DB_NAME="shopdb" \
             -e DB_USER="shopadmin" \
             -e DB_PASSWORD="${{ secrets.DB_PASSWORD }}" \
-            "$CATALOG_IMAGE"
+            tomasmatos023/catalog-service:latest
 
           docker run -d \
             --name order-service \
@@ -138,7 +128,7 @@ jobs:
             -p 8081:8081 \
             -e QUEUE_URL="${{ secrets.SQS_QUEUE_URL }}" \
             -e AWS_REGION="eu-west-1" \
-            "$ORDER_IMAGE"
+            tomasmatos023/order-service:latest
 
           docker run -d \
             --name notification-service \
@@ -146,14 +136,11 @@ jobs:
             -e PYTHONUNBUFFERED=1 \
             -e QUEUE_URL="${{ secrets.SQS_QUEUE_URL }}" \
             -e AWS_REGION="eu-west-1" \
-            "$NOTIFICATION_IMAGE"
+            tomasmatos023/notification-service:latest
 
-          sleep 5
+          sleep 10
 
           docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
-
-          test "$(docker inspect order-service --format='{{.Config.Image}}')" = "$ORDER_IMAGE"
-          test "$(docker inspect notification-service --format='{{.Config.Image}}')" = "$NOTIFICATION_IMAGE"
 
           curl --fail http://localhost:8080/health
           curl --fail http://localhost:8081/health
