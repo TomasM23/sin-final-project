@@ -144,4 +144,150 @@ jobs:
 
           curl --fail http://localhost:8080/health
           curl --fail http://localhost:8081/health
+          EOFname: CI-CD
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Catalog Service
+        run: docker build -t catalog-service:test ./services/catalog-service
+
+      - name: Build Order Service
+        run: docker build -t order-service:test ./services/order-service
+
+      - name: Build Notification Service
+        run: docker build -t notification-service:test ./services/notification-service
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::595658221962:role/gha-deployer
+          aws-region: eu-west-1
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push images
+        run: |
+          docker build --no-cache \
+            -t tomasmatos023/catalog-service:latest \
+            ./services/catalog-service
+
+          docker build --no-cache \
+            -t tomasmatos023/order-service:latest \
+            ./services/order-service
+
+          docker build --no-cache \
+            -t tomasmatos023/notification-service:latest \
+            ./services/notification-service
+
+          docker push tomasmatos023/catalog-service:latest
+          docker push tomasmatos023/order-service:latest
+          docker push tomasmatos023/notification-service:latest
+
+      - name: Verify Docker images
+        run: |
+          docker run --rm \
+            tomasmatos023/order-service:latest \
+            python -c "content=open('/app/app.py').read(); assert 'Flask' in content and 'port=8081' in content"
+
+          docker run --rm \
+            tomasmatos023/notification-service:latest \
+            python -c "content=open('/app/app.py').read(); assert 'receive_message' in content and 'Notification service started' in content"
+
+      - name: Prepare SSH key
+        run: |
+          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > key.pem
+          chmod 600 key.pem
+
+      - name: Deploy to EC2
+        run: |
+          ssh -o StrictHostKeyChecking=no \
+            -i key.pem \
+            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" << 'EOF'
+
+          set -e
+
+          docker rm -f catalog-service 2>/dev/null || true
+          docker rm -f order-service 2>/dev/null || true
+          docker rm -f notification-service 2>/dev/null || true
+
+          docker image rm -f tomasmatos023/catalog-service:latest 2>/dev/null || true
+          docker image rm -f tomasmatos023/order-service:latest 2>/dev/null || true
+          docker image rm -f tomasmatos023/notification-service:latest 2>/dev/null || true
+
+          docker pull tomasmatos023/catalog-service:latest
+          docker pull tomasmatos023/order-service:latest
+          docker pull tomasmatos023/notification-service:latest
+
+          docker run -d \
+            --name catalog-service \
+            --restart unless-stopped \
+            -p 8080:8080 \
+            -e DB_HOST="sin-final-project-postgres.ch684u8cyvxr.eu-west-1.rds.amazonaws.com" \
+            -e DB_PORT="5432" \
+            -e DB_NAME="shopdb" \
+            -e DB_USER="shopadmin" \
+            -e DB_PASSWORD="${{ secrets.DB_PASSWORD }}" \
+            tomasmatos023/catalog-service:latest
+
+          docker run -d \
+            --name order-service \
+            --restart unless-stopped \
+            -p 8081:8081 \
+            -e QUEUE_URL="${{ secrets.SQS_QUEUE_URL }}" \
+            -e AWS_REGION="eu-west-1" \
+            tomasmatos023/order-service:latest
+
+          docker run -d \
+            --name notification-service \
+            --restart unless-stopped \
+            -e PYTHONUNBUFFERED=1 \
+            -e QUEUE_URL="${{ secrets.SQS_QUEUE_URL }}" \
+            -e AWS_REGION="eu-west-1" \
+            tomasmatos023/notification-service:latest
+
+          sleep 10
+
+          echo "=== CONTAINERS ==="
+          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+
+          echo "=== VERIFY ORDER IMAGE ==="
+          test "$(docker inspect order-service --format='{{.Config.Image}}')" = "tomasmatos023/order-service:latest"
+
+          echo "=== VERIFY NOTIFICATION IMAGE ==="
+          test "$(docker inspect notification-service --format='{{.Config.Image}}')" = "tomasmatos023/notification-service:latest"
+
+          echo "=== HEALTH CHECKS ==="
+          curl --fail --retry 5 --retry-delay 3 http://localhost:8080/health
+          curl --fail --retry 5 --retry-delay 3 http://localhost:8081/health
           EOF
