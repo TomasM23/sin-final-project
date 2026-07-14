@@ -13,7 +13,37 @@ permissions:
   contents: read
 
 jobs:
-  build-push-deploy:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Catalog Service
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/catalog-service
+          push: false
+          tags: catalog-service:test
+
+      - name: Build Order Service
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/order-service
+          push: false
+          tags: order-service:test
+
+      - name: Build Notification Service
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/notification-service
+          push: false
+          tags: notification-service:test
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
     runs-on: ubuntu-latest
 
     steps:
