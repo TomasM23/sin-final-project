@@ -1,147 +1,37 @@
-name: CI-CD
+name: CI - Containers
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
-    branches:
-      - main
+    branches: [main]
+  push:
+    branches: [main]
 
 permissions:
-  id-token: write
   contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [catalog-service, order-service, notification-service]
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Build Catalog Service
-        uses: docker/build-push-action@v6
-        with:
-          context: ./services/catalog-service
-          push: false
-          tags: catalog-service:test
-
-      - name: Build Order Service
-        uses: docker/build-push-action@v6
-        with:
-          context: ./services/order-service
-          push: false
-          tags: order-service:test
-
-      - name: Build Notification Service
-        uses: docker/build-push-action@v6
-        with:
-          context: ./services/notification-service
-          push: false
-          tags: notification-service:test
-
-  deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::595658221962:role/gha-deployer
-          aws-region: eu-west-1
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
+        if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push Catalog Service
+      - name: Build and optionally push
         uses: docker/build-push-action@v6
         with:
-          context: ./services/catalog-service
-          push: true
-          no-cache: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/catalog-service:latest
-
-      - name: Build and push Order Service
-        uses: docker/build-push-action@v6
-        with:
-          context: ./services/order-service
-          push: true
-          no-cache: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/order-service:latest
-
-      - name: Build and push Notification Service
-        uses: docker/build-push-action@v6
-        with:
-          context: ./services/notification-service
-          push: true
-          no-cache: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/notification-service:latest
-
-      - name: Prepare SSH key
-        run: |
-          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > key.pem
-          chmod 600 key.pem
-
-      - name: Deploy to EC2
-        run: |
-          ssh -o StrictHostKeyChecking=no \
-            -i key.pem \
-            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" << 'EOF'
-
-          set -e
-
-          docker rm -f catalog-service 2>/dev/null || true
-          docker rm -f order-service 2>/dev/null || true
-          docker rm -f notification-service 2>/dev/null || true
-
-          docker image rm -f tomasmatos023/catalog-service:latest 2>/dev/null || true
-          docker image rm -f tomasmatos023/order-service:latest 2>/dev/null || true
-          docker image rm -f tomasmatos023/notification-service:latest 2>/dev/null || true
-
-          docker pull tomasmatos023/catalog-service:latest
-          docker pull tomasmatos023/order-service:latest
-          docker pull tomasmatos023/notification-service:latest
-
-          docker run -d \
-            --name catalog-service \
-            --restart unless-stopped \
-            -p 8080:8080 \
-            -e DB_HOST="sin-final-project-postgres.ch684u8cyvxr.eu-west-1.rds.amazonaws.com" \
-            -e DB_PORT="5432" \
-            -e DB_NAME="shopdb" \
-            -e DB_USER="shopadmin" \
-            -e DB_PASSWORD="${{ secrets.DB_PASSWORD }}" \
-            tomasmatos023/catalog-service:latest
-
-          docker run -d \
-            --name order-service \
-            --restart unless-stopped \
-            -p 8081:8081 \
-            -e QUEUE_URL="${{ secrets.SQS_QUEUE_URL }}" \
-            -e AWS_REGION="eu-west-1" \
-            tomasmatos023/order-service:latest
-
-          docker run -d \
-            --name notification-service \
-            --restart unless-stopped \
-            -e PYTHONUNBUFFERED=1 \
-            -e QUEUE_URL="${{ secrets.SQS_QUEUE_URL }}" \
-            -e AWS_REGION="eu-west-1" \
-            tomasmatos023/notification-service:latest
-
-          sleep 10
-
-          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
-
-          curl --fail http://localhost:8080/health
-          curl --fail http://localhost:8081/health
-          EOF
+          context: ./services/${{ matrix.service }}
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:latest
