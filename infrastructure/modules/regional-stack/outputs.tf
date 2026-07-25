@@ -1,0 +1,9 @@
+output "vpc_id" { value = aws_vpc.this.id }
+output "private_subnet_ids" { value = aws_subnet.private[*].id }
+output "db_security_group_id" { value = aws_security_group.database.id }
+output "instance_id" { value = aws_instance.app.id }
+output "public_ip" { value = aws_instance.app.public_ip }
+output "alb_dns_name" { value = aws_lb.app.dns_name }
+output "alb_zone_id" { value = aws_lb.app.zone_id }
+output "queue_url" { value = aws_sqs_queue.orders.url }
+output "queue_arn" { value = aws_sqs_queue.orders.arn }

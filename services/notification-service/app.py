@@ -3,37 +3,28 @@ import os
 import time
 
 import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 QUEUE_URL = os.getenv("QUEUE_URL")
+AWS_REGION = os.getenv("AWS_REGION", "eu-west-1")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "unknown")
 
-sqs = boto3.client(
-    "sqs",
-    region_name=os.getenv("AWS_REGION", "eu-west-1")
-)
-
-print("Notification service started", flush=True)
+sqs = boto3.client("sqs", region_name=AWS_REGION)
+print(f"Notification service started in {ENVIRONMENT}/{AWS_REGION}", flush=True)
 
 while True:
-    response = sqs.receive_message(
-        QueueUrl=QUEUE_URL,
-        MaxNumberOfMessages=1,
-        WaitTimeSeconds=10
-    )
-
-    messages = response.get("Messages", [])
-
-    for message in messages:
-        order = json.loads(message["Body"])
-
-        print(f"Order received: {order}", flush=True)
-        print(
-            f"Notification sent for order {order['id']}",
-            flush=True
-        )
-
-        sqs.delete_message(
+    try:
+        response = sqs.receive_message(
             QueueUrl=QUEUE_URL,
-            ReceiptHandle=message["ReceiptHandle"]
+            MaxNumberOfMessages=10,
+            WaitTimeSeconds=20,
+            VisibilityTimeout=60,
         )
-
-    time.sleep(1)
+        for message in response.get("Messages", []):
+            order = json.loads(message["Body"])
+            print(f"Order received: {order}", flush=True)
+            print(f"Notification sent for order {order['id']}", flush=True)
+            sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=message["ReceiptHandle"])
+    except (BotoCoreError, ClientError, ValueError, KeyError) as exc:
+        print(f"Notification worker error: {exc}", flush=True)
+        time.sleep(5)
