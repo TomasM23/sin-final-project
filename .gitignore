@@ -5,3 +5,9 @@
 .env
 node_modules/
 target/
+
+*.tfvars
+
+*.tfplan
+
+.terraform/

@@ -1,0 +1,98 @@
+name: Infrastructure DR
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['infrastructure/**', '.github/workflows/infrastructure-dr.yml']
+  push:
+    branches: [main]
+    paths: ['infrastructure/**', '.github/workflows/infrastructure-dr.yml']
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: terraform-dr
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: true
+  TF_VAR_dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+  TF_VAR_hosted_zone_id: ${{ secrets.HOSTED_ZONE_ID }}
+  TF_VAR_domain_name: ${{ secrets.DR_DOMAIN_NAME }}
+  TF_VAR_admin_cidr: ${{ secrets.ADMIN_CIDR }}
+  TF_VAR_key_name_primary: ${{ secrets.PRIMARY_KEY_NAME }}
+  TF_VAR_key_name_standby: ${{ secrets.STANDBY_KEY_NAME }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infrastructure/environments/dr
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: eu-west-1
+
+      - name: Terraform format
+        run: terraform fmt -check -recursive ../..
+
+      - name: Terraform init
+        run: terraform init
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Terraform plan for primary and standby
+        run: terraform plan -out=tfplan
+
+      - name: Upload reviewed plan
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-dr-plan
+          path: infrastructure/environments/dr/tfplan
+          retention-days: 1
+
+  apply:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: infrastructure/environments/dr
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: eu-west-1
+
+      - name: Terraform init
+        run: terraform init
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: terraform-dr-plan
+          path: infrastructure/environments/dr
+
+      - name: Terraform apply approved plan
+        run: terraform apply -auto-approve tfplan
