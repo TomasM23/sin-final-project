@@ -1,0 +1,126 @@
+name: DR Failover Drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      promote_database:
+        description: Promote the cross-region read replica before testing writes
+        required: true
+        type: boolean
+        default: true
+      recovery_timeout_seconds:
+        description: Maximum time to wait for DNS failover
+        required: true
+        default: '600'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    environment: disaster-recovery
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: eu-west-1
+
+      - name: Capture starting state
+        id: state
+        env:
+          DR_URL: http://${{ secrets.DR_DOMAIN_NAME }}
+        run: |
+          set -euo pipefail
+          START_EPOCH=$(date +%s)
+          echo "start_epoch=$START_EPOCH" >> "$GITHUB_OUTPUT"
+          curl --fail --retry 10 --retry-delay 5 "$DR_URL/health" | tee before.json
+
+      - name: Promote standby database replica
+        if: inputs.promote_database == true
+        run: |
+          aws rds promote-read-replica \
+            --db-instance-identifier "${{ secrets.STANDBY_DB_INSTANCE_ID }}" \
+            --region "${{ secrets.STANDBY_REGION }}"
+          aws rds wait db-instance-available \
+            --db-instance-identifier "${{ secrets.STANDBY_DB_INSTANCE_ID }}" \
+            --region "${{ secrets.STANDBY_REGION }}"
+
+      - name: Simulate primary-region application outage
+        run: |
+          aws ec2 stop-instances \
+            --instance-ids "${{ secrets.PRIMARY_INSTANCE_ID }}" \
+            --region "${{ secrets.PRIMARY_REGION }}"
+
+      - name: Measure DNS failover RTO
+        env:
+          DR_URL: http://${{ secrets.DR_DOMAIN_NAME }}
+          START_EPOCH: ${{ steps.state.outputs.start_epoch }}
+          TIMEOUT: ${{ inputs.recovery_timeout_seconds }}
+        run: |
+          set -euo pipefail
+          deadline=$((START_EPOCH + TIMEOUT))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            body=$(curl -sS --max-time 10 "$DR_URL/health" || true)
+            echo "$body"
+            if echo "$body" | jq -e '.environment == "standby" and .status == "healthy"' >/dev/null 2>&1; then
+              END_EPOCH=$(date +%s)
+              RTO=$((END_EPOCH - START_EPOCH))
+              printf 'RTO_SECONDS=%s\n' "$RTO" | tee rto.txt
+              printf '%s\n' "$body" > after.json
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Failover was not observed before timeout" >&2
+          exit 1
+
+      - name: Verify standby read path
+        env:
+          DR_URL: http://${{ secrets.DR_DOMAIN_NAME }}
+        run: |
+          curl --fail "$DR_URL/products" | tee products-after-failover.json
+          curl --fail "$DR_URL/orders" | tee orders-after-failover.json
+
+      - name: Verify standby write path
+        if: inputs.promote_database == true
+        env:
+          DR_URL: http://${{ secrets.DR_DOMAIN_NAME }}
+        run: |
+          curl --fail -X POST "$DR_URL/orders" \
+            -H 'Content-Type: application/json' \
+            -d '{"product":"DR drill","quantity":1}' | tee write-after-failover.json
+
+      - name: Restart primary application
+        if: always()
+        run: |
+          aws ec2 start-instances \
+            --instance-ids "${{ secrets.PRIMARY_INSTANCE_ID }}" \
+            --region "${{ secrets.PRIMARY_REGION }}" || true
+
+      - name: Create drill report
+        if: always()
+        run: |
+          {
+            echo "# DR drill report"
+            echo
+            echo "- Date: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "- Primary region: ${{ secrets.PRIMARY_REGION }}"
+            echo "- Standby region: ${{ secrets.STANDBY_REGION }}"
+            [ -f rto.txt ] && echo "- $(cat rto.txt)" || echo "- RTO: not measured"
+            echo "- Database replica promoted: ${{ inputs.promote_database }}"
+          } > dr-report.md
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dr-drill-${{ github.run_id }}
+          path: |
+            *.json
+            *.txt
+            dr-report.md
