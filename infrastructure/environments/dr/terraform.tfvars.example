@@ -1,0 +1,21 @@
+project_name       = "sin-final-project"
+primary_region     = "eu-west-1"
+standby_region     = "eu-central-1"
+dockerhub_username = "YOUR_DOCKERHUB_USERNAME"
+image_tag          = "latest"
+admin_cidr         = "YOUR_PUBLIC_IP/32"
+
+# Key pairs are region-specific. Create one in each region or leave empty.
+key_name_primary = "sin-final-project-key"
+key_name_standby = "sin-final-project-key-standby"
+
+# Route 53 failover (required for the full live demonstration).
+hosted_zone_id = "Z123456789EXAMPLE"
+domain_name    = "app.example.com"
+
+# GitHub OIDC role. Set false when an OIDC provider already exists in the account.
+create_github_oidc = false
+github_repository  = "OWNER/REPOSITORY"
+
+# Cost control: set false while initially testing the rest of the infrastructure.
+enable_cross_region_read_replica = true
