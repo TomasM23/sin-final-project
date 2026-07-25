@@ -1,412 +1,149 @@
-\# SIN Final Project
+# SIN Final Project — Special Season DR
 
+Projeto de Sistemas de Informação na Nuvem com microserviços, Terraform, Docker, SQS, RDS, CI/CD e uma extensão obrigatória de **Automated Disaster Recovery & Multi-Region Failover**.
 
+## Arquitetura
 
-Projeto final de Sistemas de Informação na Nuvem.
-
-
-
-\## Descrição
-
-
-
-Este projeto implementa uma aplicação distribuída baseada numa arquitetura de microserviços e serviços cloud da AWS.
-
-
-
-A aplicação é composta por três microserviços:
-
-
-
-\- `catalog-service` — serviço responsável pelo catálogo.
-
-\- `order-service` — serviço responsável pela criação de encomendas.
-
-\- `notification-service` — serviço responsável pelo processamento assíncrono das encomendas.
-
-
-
-\## Arquitetura
-
-
+- Primary: `eu-west-1`
+- Standby: `eu-central-1`
+- Route 53 DNS failover
+- ALB e health checks em cada região
+- EC2 com containers Docker
+- RDS PostgreSQL Multi-AZ no primary
+- Read replica PostgreSQL cross-region opcional
+- SQS e DLQ independentes por região
+- Secrets Manager em ambas as regiões
+- GitHub Actions autenticado por OIDC
 
 ```text
-
-&#x20;                   GitHub
-
-&#x20;                      |
-
-&#x20;                      v
-
-&#x20;               GitHub Actions
-
-&#x20;                      |
-
-&#x20;                 OIDC / IAM
-
-&#x20;                      |
-
-&#x20;                      v
-
-&#x20;                    AWS
-
-&#x20;                      |
-
-&#x20;             +--------+--------+
-
-&#x20;             |                 |
-
-&#x20;             v                 v
-
-&#x20;            EC2               RDS
-
-&#x20;             |              PostgreSQL
-
-&#x20;             |
-
-&#x20;   +---------+----------+
-
-&#x20;   |         |          |
-
-&#x20;   v         v          v
-
-&#x20;Catalog    Order    Notification
-
-&#x20;Service   Service      Service
-
-&#x20; :8080     :8081
-
-&#x20;             |
-
-&#x20;             v
-
-&#x20;         Amazon SQS
-
-&#x20;             |
-
-&#x20;             v
-
-&#x20;     Notification Service
-
+                     Route 53
+                 failover DNS record
+                         |
+            +------------+------------+
+            |                         |
+     eu-west-1 PRIMARY          eu-central-1 STANDBY
+            |                         |
+           ALB                       ALB
+            |                         |
+           EC2                       EC2
+       Docker services           Docker services
+            |                         |
+       SQS + DLQ                 SQS + DLQ
+            |
+     RDS Multi-AZ  ---- cross-region read replica ----> RDS standby
 ```
 
+## Microserviços
 
+- `catalog-service`: produtos persistidos no PostgreSQL, porta 8080.
+- `order-service`: encomendas persistidas no PostgreSQL e eventos enviados para SQS, porta 8081.
+- `notification-service`: consumidor assíncrono da fila SQS.
 
-\## Serviços
+Os endpoints `/health` devolvem serviço, estado, ambiente e região para tornar o failover visível.
 
-
-
-\### Catalog Service
-
-
-
-O `catalog-service` é executado num container Docker na instância EC2 e comunica com a base de dados PostgreSQL no Amazon RDS.
-
-
-
-Porta utilizada:
-
-
+## Estrutura importante
 
 ```text
-
-8080
-
+infrastructure/
+  environments/dr/          # composição primary + standby
+  modules/regional-stack/   # VPC, subnets, ALB, EC2, SQS, IAM
+  modules/database-primary/
+  modules/database-replica/
+  modules/failover-dns/
+  modules/github-oidc/
+.github/workflows/
+  ci.yml
+  infrastructure-dr.yml
+  failover-drill.yml
+docs/dr.md
 ```
 
+A pasta `terraform/` foi mantida como versão original/legada. Para a Época Especial deve ser usada a pasta `infrastructure/`.
 
-
-Teste de saúde:
-
-
+## Configuração local
 
 ```bash
-
-curl http://localhost:8080/health
-
+cd infrastructure/environments/dr
+cp terraform.tfvars.example terraform.tfvars
 ```
 
+Editar `terraform.tfvars` com:
 
+- utilizador Docker Hub;
+- Hosted Zone ID e domínio Route 53;
+- IP público do administrador em formato `/32`;
+- nomes dos key pairs, caso seja necessário SSH;
+- repositório GitHub.
 
-\### Order Service
-
-
-
-O `order-service` permite criar encomendas e enviar uma mensagem para uma fila Amazon SQS.
-
-
-
-Porta utilizada:
-
-
-
-```text
-
-8081
-
-```
-
-
-
-Teste de saúde:
-
-
+Depois:
 
 ```bash
-
-curl http://localhost:8081/health
-
+terraform init
+terraform fmt -recursive ../..
+terraform validate
+terraform plan
+terraform apply
 ```
 
+> O backend remoto está em `backend.tf.example`. Renomear para `backend.tf` e preencher S3/DynamoDB quando estiver pronto. Sem isso, o Terraform usa estado local.
 
-
-Exemplo de criação de uma encomenda:
-
-
+## Outputs
 
 ```bash
-
-curl -X POST http://localhost:8081/orders \\
-
-&#x20; -H "Content-Type: application/json" \\
-
-&#x20; -d '{"product":"Teste","quantity":1}'
-
+terraform output
+terraform output primary
+terraform output standby
+terraform output failover_fqdn
 ```
 
+## GitHub Secrets
 
+Criar estes secrets no repositório:
 
-\### Notification Service
+| Secret | Conteúdo |
+|---|---|
+| `AWS_ROLE_ARN` | ARN da role OIDC usada pelos workflows |
+| `DOCKERHUB_USERNAME` | utilizador Docker Hub |
+| `DOCKERHUB_TOKEN` | token Docker Hub |
+| `HOSTED_ZONE_ID` | Hosted Zone ID do Route 53 |
+| `DR_DOMAIN_NAME` | domínio completo, por exemplo `app.example.com` |
+| `ADMIN_CIDR` | IP autorizado para SSH, por exemplo `1.2.3.4/32` |
+| `PRIMARY_KEY_NAME` | key pair da região primary |
+| `STANDBY_KEY_NAME` | key pair da região standby |
+| `PRIMARY_INSTANCE_ID` | output da instância EC2 primary |
+| `STANDBY_DB_INSTANCE_ID` | identificador RDS standby |
+| `PRIMARY_REGION` | `eu-west-1` |
+| `STANDBY_REGION` | `eu-central-1` |
 
+Também criar os GitHub Environments:
 
+- `production`, com aprovação obrigatória para apply;
+- `disaster-recovery`, com aprovação antes do drill.
 
-O `notification-service` funciona como consumidor da fila Amazon SQS.
+## Pipelines
 
+- `CI - Containers`: valida as imagens em PR e publica no Docker Hub em `main`.
+- `Infrastructure DR`: executa format, init, validate e plan; em merge para `main` executa apply.
+- `DR Failover Drill`: workflow manual que promove a réplica opcionalmente, para a EC2 primary, mede RTO, testa o standby e reinicia a EC2 primary.
 
-
-Quando uma nova encomenda é enviada pelo `order-service`, o serviço recebe a mensagem, processa a encomenda e remove a mensagem da fila.
-
-
-
-Os logs podem ser consultados através de:
-
-
+## Testes
 
 ```bash
-
-sudo docker logs notification-service
-
+curl http://DOMINIO/health
+curl http://DOMINIO/products
+curl http://DOMINIO/orders
+curl -X POST http://DOMINIO/orders \
+  -H 'Content-Type: application/json' \
+  -d '{"product":"Teste","quantity":1}'
 ```
 
+## Runbook
 
+Consultar [`docs/dr.md`](docs/dr.md) para trigger, observação, rollback, medição de RTO/RPO e controlo de custos.
 
-\## Infraestrutura AWS
+## Avisos
 
-
-
-A infraestrutura foi criada utilizando Terraform.
-
-
-
-Foram utilizados os seguintes serviços AWS:
-
-
-
-\- Amazon VPC
-
-\- Amazon EC2
-
-\- Amazon RDS PostgreSQL
-
-\- Amazon SQS
-
-\- AWS IAM
-
-\- IAM Roles
-
-\- OpenID Connect (OIDC)
-
-
-
-A aplicação utiliza uma VPC com subnets públicas e privadas.
-
-
-
-A instância EC2 executa os microserviços em containers Docker.
-
-
-
-A base de dados PostgreSQL é disponibilizada através do Amazon RDS.
-
-
-
-O Amazon SQS permite a comunicação assíncrona entre o `order-service` e o `notification-service`.
-
-
-
-\## Docker
-
-
-
-Cada microserviço possui o seu próprio `Dockerfile`.
-
-
-
-As imagens são construídas e publicadas no Docker Hub:
-
-
-
-\- `tomasmatos023/catalog-service`
-
-\- `tomasmatos023/order-service`
-
-\- `tomasmatos023/notification-service`
-
-
-
-Os containers são executados na instância EC2.
-
-
-
-\## Ansible
-
-
-
-O Ansible é utilizado para configurar automaticamente a instância EC2.
-
-
-
-O playbook instala e configura os componentes necessários para executar a aplicação.
-
-
-
-Teste de comunicação:
-
-
-
-```bash
-
-ansible all -i inventory.ini -m ping
-
-```
-
-
-
-Execução do playbook:
-
-
-
-```bash
-
-ansible-playbook -i inventory.ini playbook.yml
-
-```
-
-
-
-\## CI/CD
-
-
-
-O projeto utiliza GitHub Actions para implementar um pipeline CI/CD.
-
-
-
-Quando é realizado um push para a branch `main`, o pipeline executa automaticamente:
-
-
-
-1\. Checkout do repositório.
-
-2\. Autenticação na AWS através de OIDC.
-
-3\. Login no Docker Hub.
-
-4\. Build das imagens Docker.
-
-5\. Push das imagens para o Docker Hub.
-
-6\. Ligação SSH à instância EC2.
-
-7\. Pull das novas imagens.
-
-8\. Recriação dos containers.
-
-
-
-A autenticação entre o GitHub Actions e a AWS utiliza OIDC, evitando a utilização de Access Keys permanentes.
-
-
-
-\## Segurança
-
-
-
-Foram aplicadas várias medidas de segurança:
-
-
-
-\- Utilização de IAM Roles.
-
-\- Autenticação OIDC entre GitHub Actions e AWS.
-
-\- Secrets armazenados no GitHub Actions.
-
-\- Base de dados executada no Amazon RDS.
-
-\- Permissões IAM baseadas no princípio de menor privilégio.
-
-\- Acesso ao Amazon SQS limitado à fila do projeto.
-
-\- Branch `main` protegida através de Branch Protection Rules.
-
-
-
-\## Branch Protection
-
-
-
-A branch `main` está protegida.
-
-
-
-As alterações devem ser realizadas numa branch separada e integradas através de Pull Request.
-
-
-
-Os status checks do GitHub Actions devem ser concluídos com sucesso antes do merge.
-
-
-
-\## Tecnologias utilizadas
-
-
-
-\- AWS
-
-\- Terraform
-
-\- Ansible
-
-\- Docker
-
-\- Python
-
-\- Flask
-
-\- PostgreSQL
-
-\- Amazon SQS
-
-\- GitHub Actions
-
-\- GitHub OIDC
-
-
-
-\## Autor
-
-
-
-Tomás Matos - a22209049
-
+- A read replica cross-region e o RDS Multi-AZ têm custos relevantes.
+- A promoção de uma read replica é irreversível e exige recriar a topologia para efetuar failback.
+- O primeiro `apply` deve ser acompanhado e testado por etapas.
+- Nunca colocar passwords, access keys ou private keys no Git.
