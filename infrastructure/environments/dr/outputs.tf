@@ -32,3 +32,12 @@ output "database_password" {
   value     = random_password.database.result
   sensitive = true
 }
+output "dr_cloudfront_domain" {
+  description = "Single public endpoint with automatic regional failover"
+  value       = module.cloudfront_failover.domain_name
+}
+
+output "dr_cloudfront_distribution_id" {
+  description = "CloudFront distribution identifier"
+  value       = module.cloudfront_failover.distribution_id
+}
