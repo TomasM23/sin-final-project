@@ -1,4 +1,4 @@
-# SIN Final Project — Special Season DR
+# SIN Final Project — Época Especial
 
 Projeto de Sistemas de Informação na Nuvem com microserviços, Terraform, Docker, SQS, RDS, CI/CD e uma extensão obrigatória de **Automated Disaster Recovery & Multi-Region Failover**.
 
@@ -58,44 +58,6 @@ infrastructure/
 docs/dr.md
 ```
 
-A pasta `terraform/` foi mantida como versão original/legada. Para a Época Especial deve ser usada a pasta `infrastructure/`.
-
-## Configuração local
-
-```bash
-cd infrastructure/environments/dr
-cp terraform.tfvars.example terraform.tfvars
-```
-
-Editar `terraform.tfvars` com:
-
-- utilizador Docker Hub;
-- Hosted Zone ID e domínio Route 53;
-- IP público do administrador em formato `/32`;
-- nomes dos key pairs, caso seja necessário SSH;
-- repositório GitHub.
-
-Depois:
-
-```bash
-terraform init
-terraform fmt -recursive ../..
-terraform validate
-terraform plan
-terraform apply
-```
-
-> O backend remoto está em `backend.tf.example`. Renomear para `backend.tf` e preencher S3/DynamoDB quando estiver pronto. Sem isso, o Terraform usa estado local.
-
-## Outputs
-
-```bash
-terraform output
-terraform output primary
-terraform output standby
-terraform output failover_fqdn
-```
-
 ## GitHub Secrets
 
 Criar estes secrets no repositório:
@@ -115,10 +77,6 @@ Criar estes secrets no repositório:
 | `PRIMARY_REGION` | `eu-west-1` |
 | `STANDBY_REGION` | `eu-central-1` |
 
-Também criar os GitHub Environments:
-
-- `production`, com aprovação obrigatória para apply;
-- `disaster-recovery`, com aprovação antes do drill.
 
 ## Pipelines
 
@@ -137,13 +95,3 @@ curl -X POST http://DOMINIO/orders \
   -d '{"product":"Teste","quantity":1}'
 ```
 
-## Runbook
-
-Consultar [`docs/dr.md`](docs/dr.md) para trigger, observação, rollback, medição de RTO/RPO e controlo de custos.
-
-## Avisos
-
-- A read replica cross-region e o RDS Multi-AZ têm custos relevantes.
-- A promoção de uma read replica é irreversível e exige recriar a topologia para efetuar failback.
-- O primeiro `apply` deve ser acompanhado e testado por etapas.
-- Nunca colocar passwords, access keys ou private keys no Git.
