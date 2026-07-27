@@ -137,3 +137,10 @@ module "github_oidc" {
   project_name      = var.project_name
   github_repository = var.github_repository
 }
+module "cloudfront_failover" {
+  source = "../../modules/cloudfront-failover"
+
+  project_name    = var.project_name
+  primary_alb_dns = module.primary.alb_dns_name
+  standby_alb_dns = module.standby.alb_dns_name
+}
