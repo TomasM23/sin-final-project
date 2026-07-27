@@ -1,9 +1,31 @@
 #!/bin/bash
 set -euxo pipefail
+
 export DEBIAN_FRONTEND=noninteractive
+
+# Atualizar pacotes e instalar dependências
 apt-get update
-apt-get install -y docker.io awscli jq
+apt-get install -y docker.io jq unzip curl
+
+# Ativar o Docker
 systemctl enable --now docker
+
+# Instalar o AWS CLI v2, caso ainda não esteja instalado
+if ! command -v aws >/dev/null 2>&1; then
+  rm -rf /tmp/aws /tmp/awscliv2.zip
+
+  curl -fsSL \
+    "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" \
+    -o /tmp/awscliv2.zip
+
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install
+fi
+
+# Confirmar que as ferramentas necessárias existem
+docker --version
+aws --version
+jq --version
 
 REGION='${region}'
 ENVIRONMENT='${environment}'
@@ -12,34 +34,95 @@ SECRET_NAME='${db_secret_name}'
 DOCKER_USER='${dockerhub_username}'
 IMAGE_TAG='${image_tag}'
 
+# Esperar até o secret estar disponível
+SECRET_JSON=""
+
 for attempt in $(seq 1 180); do
-  SECRET_JSON=$(aws secretsmanager get-secret-value --region "$REGION" --secret-id "$SECRET_NAME" --query SecretString --output text 2>/dev/null || true)
-  [ -n "$SECRET_JSON" ] && [ "$SECRET_JSON" != "None" ] && break
+  SECRET_JSON=$(
+    aws secretsmanager get-secret-value \
+      --region "$REGION" \
+      --secret-id "$SECRET_NAME" \
+      --query SecretString \
+      --output text 2>/dev/null || true
+  )
+
+  if [ -n "$SECRET_JSON" ] && [ "$SECRET_JSON" != "None" ]; then
+    echo "Database secret obtained successfully."
+    break
+  fi
+
+  echo "Waiting for database secret ($attempt/180)..."
   sleep 10
 done
 
-DB_HOST=$(echo "$SECRET_JSON" | jq -r .host)
-DB_PORT=$(echo "$SECRET_JSON" | jq -r .port)
-DB_NAME=$(echo "$SECRET_JSON" | jq -r .database)
-DB_USER=$(echo "$SECRET_JSON" | jq -r .username)
-DB_PASSWORD=$(echo "$SECRET_JSON" | jq -r .password)
+# Interromper caso o secret não tenha sido obtido
+if [ -z "$SECRET_JSON" ] || [ "$SECRET_JSON" = "None" ]; then
+  echo "ERROR: Could not obtain database secret: $SECRET_NAME"
+  exit 1
+fi
 
-for c in catalog-service order-service notification-service; do docker rm -f "$c" || true; done
+DB_HOST=$(echo "$SECRET_JSON" | jq -r '.host')
+DB_PORT=$(echo "$SECRET_JSON" | jq -r '.port')
+DB_NAME=$(echo "$SECRET_JSON" | jq -r '.database')
+DB_USER=$(echo "$SECRET_JSON" | jq -r '.username')
+DB_PASSWORD=$(echo "$SECRET_JSON" | jq -r '.password')
 
+# Validar os valores do secret
+for value in "$DB_HOST" "$DB_PORT" "$DB_NAME" "$DB_USER" "$DB_PASSWORD"; do
+  if [ -z "$value" ] || [ "$value" = "null" ]; then
+    echo "ERROR: Database secret contains an invalid or missing value."
+    exit 1
+  fi
+done
+
+# Remover containers anteriores
+for container in catalog-service order-service notification-service; do
+  docker rm -f "$container" 2>/dev/null || true
+done
+
+# Descarregar imagens
 docker pull "$DOCKER_USER/catalog-service:$IMAGE_TAG"
 docker pull "$DOCKER_USER/order-service:$IMAGE_TAG"
 docker pull "$DOCKER_USER/notification-service:$IMAGE_TAG"
 
-docker run -d --name catalog-service --restart unless-stopped -p 8080:8080 \
-  -e ENVIRONMENT="$ENVIRONMENT" -e AWS_REGION="$REGION" \
-  -e DB_HOST="$DB_HOST" -e DB_PORT="$DB_PORT" -e DB_NAME="$DB_NAME" -e DB_USER="$DB_USER" -e DB_PASSWORD="$DB_PASSWORD" \
+# Catalog Service
+docker run -d \
+  --name catalog-service \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -e ENVIRONMENT="$ENVIRONMENT" \
+  -e AWS_REGION="$REGION" \
+  -e DB_HOST="$DB_HOST" \
+  -e DB_PORT="$DB_PORT" \
+  -e DB_NAME="$DB_NAME" \
+  -e DB_USER="$DB_USER" \
+  -e DB_PASSWORD="$DB_PASSWORD" \
   "$DOCKER_USER/catalog-service:$IMAGE_TAG"
 
-docker run -d --name order-service --restart unless-stopped -p 8081:8081 \
-  -e ENVIRONMENT="$ENVIRONMENT" -e AWS_REGION="$REGION" -e QUEUE_URL="$QUEUE_URL" \
-  -e DB_HOST="$DB_HOST" -e DB_PORT="$DB_PORT" -e DB_NAME="$DB_NAME" -e DB_USER="$DB_USER" -e DB_PASSWORD="$DB_PASSWORD" \
+# Order Service
+docker run -d \
+  --name order-service \
+  --restart unless-stopped \
+  -p 8081:8081 \
+  -e ENVIRONMENT="$ENVIRONMENT" \
+  -e AWS_REGION="$REGION" \
+  -e QUEUE_URL="$QUEUE_URL" \
+  -e DB_HOST="$DB_HOST" \
+  -e DB_PORT="$DB_PORT" \
+  -e DB_NAME="$DB_NAME" \
+  -e DB_USER="$DB_USER" \
+  -e DB_PASSWORD="$DB_PASSWORD" \
   "$DOCKER_USER/order-service:$IMAGE_TAG"
 
-docker run -d --name notification-service --restart unless-stopped \
-  -e PYTHONUNBUFFERED=1 -e ENVIRONMENT="$ENVIRONMENT" -e AWS_REGION="$REGION" -e QUEUE_URL="$QUEUE_URL" \
+# Notification Service
+docker run -d \
+  --name notification-service \
+  --restart unless-stopped \
+  -e PYTHONUNBUFFERED=1 \
+  -e ENVIRONMENT="$ENVIRONMENT" \
+  -e AWS_REGION="$REGION" \
+  -e QUEUE_URL="$QUEUE_URL" \
   "$DOCKER_USER/notification-service:$IMAGE_TAG"
+
+# Mostrar o estado final
+docker ps -a
